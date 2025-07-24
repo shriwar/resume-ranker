@@ -5,8 +5,9 @@ import numpy as np
 from io import BytesIO
 from sklearn.metrics.pairwise import cosine_similarity
 import os
-# 🔐 Set your OpenAI API key
-openai.api_key = sk-proj-ydk9KGZKXxVZZ4UCzbFQT3BlbkFJv1mW14omh2UkGXlEPBsW
+
+# 🔐 Load OpenAI API key from Streamlit secrets
+openai.api_key = st.secrets["OPENAI_API_KEY"]
 client = openai.OpenAI(api_key=openai.api_key)
 
 st.set_page_config(page_title="Resume Ranker (Embeddings)", layout="wide")
@@ -14,6 +15,7 @@ st.title("🧠 Resume Ranker using Semantic Embeddings")
 
 # 📄 Upload JD
 jd_file = st.file_uploader("📄 Upload Job Description (PDF or TXT)", type=["pdf", "txt"])
+
 # 📁 Upload Resumes
 resume_files = st.file_uploader("📁 Upload Resumes (PDFs)", type=["pdf"], accept_multiple_files=True)
 
