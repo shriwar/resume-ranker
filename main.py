@@ -6,8 +6,7 @@ from io import BytesIO
 from sklearn.metrics.pairwise import cosine_similarity
 
 # 🔑 Set your OpenAI API key directly here
-openai.api_key = "sk-proj-ydk9KGZKXxVZZ4UCzbFQT3BlbkFJv1mW14omh2UkGXlEPBsW
-"
+openai.api_key = st.secrets["OPENAI_API_KEY"]
 
 st.set_page_config(page_title="Resume Ranker", layout="wide")
 st.title("🧠 Resume Ranker using Embeddings")
