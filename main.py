@@ -1,12 +1,12 @@
 import streamlit as st
-import openai
-import PyPDF2
 import numpy as np
+import PyPDF2
 from io import BytesIO
 from sklearn.metrics.pairwise import cosine_similarity
+from openai import OpenAI
 
-# 🔑 Set your OpenAI API key directly here
-openai.api_key = st.secrets["OPENAI_API_KEY"]
+# ✅ Use secrets for API key
+client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
 st.set_page_config(page_title="Resume Ranker", layout="wide")
 st.title("🧠 Resume Ranker using Embeddings")
@@ -27,15 +27,15 @@ def chunk_text(text, max_words=250):
     words = text.split()
     return [" ".join(words[i:i+max_words]) for i in range(0, len(words), max_words)]
 
-# 🧠 Get OpenAI embedding
+# 🧠 Get OpenAI embedding using new SDK
 def get_embedding(text):
     try:
         text = text[:8000]  # Truncate for safety
-        response = openai.Embedding.create(
+        response = client.embeddings.create(
             input=[text],
             model="text-embedding-3-small"
         )
-        return np.array(response['data'][0]['embedding'])
+        return np.array(response.data[0].embedding)
     except Exception as e:
         st.error(f"❌ Error generating embedding: {e}")
         return np.zeros((1536,))
