@@ -6,8 +6,8 @@ from io import BytesIO
 from sklearn.metrics.pairwise import cosine_similarity
 import os
 
-# 🔐 Load OpenAI API key from Streamlit secrets
-openai.api_key = st.secrets["OPENAI_API_KEY"]
+# 🔐 Set OpenAI API key directly here
+openai.api_key = "sk-proj-ydk9KGZKXxVZZ4UCzbFQT3BlbkFJv1mW14omh2UkGXlEPBsW"
 client = openai.OpenAI(api_key=openai.api_key)
 
 st.set_page_config(page_title="Resume Ranker (Embeddings)", layout="wide")
@@ -24,24 +24,33 @@ def extract_text_from_pdf(file):
     reader = PyPDF2.PdfReader(file)
     return "\n".join(page.extract_text() or "" for page in reader.pages).strip()
 
-# Chunk long text into ~500 token chunks
+# Chunk long text into ~250-word chunks
 def chunk_text(text, max_words=250):
     words = text.split()
     return [" ".join(words[i:i+max_words]) for i in range(0, len(words), max_words)]
 
 # Get OpenAI embedding for a single string
 def get_embedding(text):
-    response = client.embeddings.create(
-        input=[text],
-        model="text-embedding-3-small"
-    )
-    return np.array(response.data[0].embedding)
+    try:
+        # Truncate input text to ~8000 characters (safe for token limits)
+        if len(text) > 8000:
+            text = text[:8000]
+
+        response = client.embeddings.create(
+            input=[text],
+            model="text-embedding-3-small"
+        )
+        return np.array(response.data[0].embedding)
+
+    except Exception as e:
+        st.error(f"❌ Failed to generate embedding: {e}")
+        return np.zeros((1536,))  # Fallback vector with zeros
 
 # Rank resumes by cosine similarity to JD
 def rank_by_embedding(jd_text, resumes):
     jd_embedding = get_embedding(jd_text)
-
     ranked = []
+
     for resume_file in resumes:
         resume_text = extract_text_from_pdf(resume_file)
         chunks = chunk_text(resume_text)
@@ -69,7 +78,7 @@ def extract_jd_text(jd_file):
 
 # 🚀 Run app
 if jd_file and resume_files:
-    with st.spinner("Generating embeddings and ranking resumes..."):
+    with st.spinner("🔍 Generating embeddings and ranking resumes..."):
         jd_text = extract_jd_text(jd_file)
         ranked_resumes = rank_by_embedding(jd_text, resume_files)
 
