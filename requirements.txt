@@ -7,4 +7,4 @@ python-docx
 tiktoken
 pdf2image
 pytesseract
-PIL
+pillow
