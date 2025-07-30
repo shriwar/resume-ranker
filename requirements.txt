@@ -1,0 +1,7 @@
+streamlit
+openai
+python-dotenv
+scikit-learn
+PyPDF2
+python-docx
+tiktoken
