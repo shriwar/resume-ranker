@@ -5,3 +5,4 @@ scikit-learn
 PyPDF2
 python-docx
 tiktoken
+pdf2image
