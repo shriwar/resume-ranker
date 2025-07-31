@@ -10,168 +10,230 @@ import docx
 from pdf2image import convert_from_bytes
 import pytesseract
 from PIL import Image
+import smtplib
+from email.message import EmailMessage
+import re
 
 # Load environment variables
 load_dotenv()
+
+# Configuration
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+EMAIL_SENDER = os.getenv("EMAIL_ADDRESS")
+EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
 
+# Streamlit page configuration
 st.set_page_config(page_title="🧠 Resume Ranker", layout="wide")
-st.title("🧠 Resume Ranker using OpenAI Embeddings with Chunking + OCR")
+st.title("🧠 Resume Ranker + AI Screening Test Generator")
 
-# 🎓 Priority Colleges and Companies
-top_colleges = ["iit", "nit", "nift", "iim", "iiit", "bhu", "bits", "nifd", "nid", "srishti"]
-top_companies = ["google", "microsoft", "amazon", "apple", "meta", "netflix", "tcs", "infosys", "wipro", "adobe", "zoho"]
+# Initialize session state
+session_defaults = {
+    "ranked_resumes": [],
+    "resume_texts": {},
+    "selected_candidates": [],
+    "screening_test": "",
+    "emails": {},
+    "rank_triggered": False
+}
+for key, default in session_defaults.items():
+    if key not in st.session_state:
+        st.session_state[key] = default
 
-# 🔍 Chunking for Long Texts
+# Constants
+TOP_COLLEGES = ["iit", "nit", "nift", "iim", "iiit", "bhu", "bits", "nifd", "nid", "srishti"]
+TOP_COMPANIES = ["google", "microsoft", "amazon", "apple", "meta", "netflix", "tcs", "infosys", "wipro", "adobe", "zoho"]
+
+# Utility functions
 def chunk_text(text, max_tokens=800):
     enc = tiktoken.encoding_for_model("text-embedding-3-small")
     tokens = enc.encode(text)
-    chunks = []
+    return [enc.decode(tokens[i:i + max_tokens]) for i in range(0, len(tokens), max_tokens)]
 
-    for i in range(0, len(tokens), max_tokens):
-        chunk = tokens[i:i + max_tokens]
-        decoded = enc.decode(chunk)
-        chunks.append(decoded)
-
-    return chunks
-
-# 📊 Get Embedding with Chunking
 @st.cache_data(show_spinner=False)
 def get_embedding(text):
     chunks = chunk_text(text)
     embeddings = []
-
     for chunk in chunks:
         try:
-            response = client.embeddings.create(
-                input=[chunk],
-                model="text-embedding-3-small"
-            )
-            embedding = response.data[0].embedding
-            embeddings.append(embedding)
-        except Exception as e:
-            st.error(f"❌ Embedding failed on a chunk: {e}")
+            response = client.embeddings.create(input=[chunk], model="text-embedding-3-small")
+            embeddings.append(response.data[0].embedding)
+        except:
             continue
+    return np.mean(np.array(embeddings), axis=0) if embeddings else np.zeros(1536)
 
-    if not embeddings:
-        return np.zeros(1536)
-
-    return np.mean(np.array(embeddings), axis=0)
-
-# 📄 Extract text from PDF with OCR fallback
 def extract_text_from_pdf(file):
     try:
         reader = PyPDF2.PdfReader(file)
         text = "\n".join([page.extract_text() or "" for page in reader.pages])
         file.seek(0)
-
         if text.strip():
             return text
-
-        st.info(f"🖼️ Using OCR for image-based PDF: `{file.name}`")
         images = convert_from_bytes(file.read(), dpi=300)
-        ocr_text = ""
-        for img in images:
-            ocr_text += pytesseract.image_to_string(img)
-        file.seek(0)
-        return ocr_text
-    except Exception as e:
-        st.error(f"❌ PDF text extraction failed: {e}")
+        return "".join([pytesseract.image_to_string(img) for img in images])
+    except:
         return ""
 
-# 📄 Extract text from DOCX
 def extract_text_from_docx(file):
     try:
         doc = docx.Document(file)
         return "\n".join([para.text for para in doc.paragraphs])
-    except Exception as e:
-        st.error(f"❌ Failed to read DOCX: {e}")
+    except:
         return ""
 
-# 🎯 Scoring Boost (bonus logic)
 def compute_bonus_score(text, jd_text):
-    text_lower = text.lower()
-    jd_lower = jd_text.lower()
-
+    text_lower, jd_lower = text.lower(), jd_text.lower()
     bonus = 0
-
-    if any(college in text_lower for college in top_colleges):
-        bonus += 0.05
-    if any(company in text_lower for company in top_companies):
-        bonus += 0.05
-    if any(keyword in text_lower for keyword in jd_lower.split()):
-        bonus += 0.05
-
+    if any(college in text_lower for college in TOP_COLLEGES): bonus += 0.05
+    if any(company in text_lower for company in TOP_COMPANIES): bonus += 0.05
+    if any(keyword in text_lower for keyword in jd_lower.split()): bonus += 0.05
     return min(bonus, 0.15)
 
-# 🧠 Rank resumes
-def rank_by_embedding(jd_text, resume_files):
+def extract_email(text):
+    match = re.search(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}", text)
+    return match.group(0) if match else ""
+
+def rank_by_embedding(jd_text, resume_files, custom_text=""):
     jd_embedding = get_embedding(jd_text)
+    custom_embedding = get_embedding(custom_text) if custom_text.strip() else None
     scores = []
-    resume_text_cache = {}
+    resume_texts = {}
 
     for resume_file in resume_files:
-        ext = resume_file.name.lower().split('.')[-1]
-        if ext == "pdf":
-            resume_text = extract_text_from_pdf(resume_file)
-        elif ext == "docx":
-            resume_text = extract_text_from_docx(resume_file)
-        else:
-            st.warning(f"⚠️ Unsupported file format: {resume_file.name}")
-            continue
-
+        name = resume_file.name
+        ext = name.lower().split('.')[-1]
+        resume_text = extract_text_from_pdf(resume_file) if ext == "pdf" else extract_text_from_docx(resume_file)
         if not resume_text.strip():
-            st.warning(f"⚠️ No text extracted from `{resume_file.name}`.")
             continue
 
-        resume_text_cache[resume_file.name] = resume_text
-        resume_embedding = get_embedding(resume_text)
-        similarity = cosine_similarity([jd_embedding], [resume_embedding])[0][0]
+        resume_texts[name] = resume_text
+        emb = get_embedding(resume_text)
 
-        bonus = compute_bonus_score(resume_text, jd_text)
-        final_score = similarity + bonus
-        scores.append((resume_file.name, final_score))
+        jd_similarity = cosine_similarity([jd_embedding], [emb])[0][0]
+        custom_similarity = cosine_similarity([custom_embedding], [emb])[0][0] if custom_embedding is not None else 0.0
 
-    ranked = sorted(scores, key=lambda x: x[1], reverse=True)
-    return ranked, resume_text_cache
+        combined_similarity = 0.8 * jd_similarity + 0.2 * custom_similarity
+        final_score = combined_similarity + compute_bonus_score(resume_text, jd_text)
 
-# ---------------- UI ---------------- #
+        scores.append((name, final_score))
 
-# 📥 JD Input
-jd_input_method = st.radio("📌 Choose Job Description Input Method:", ["Paste Text", "Upload File (PDF/DOCX)"])
+    return sorted(scores, key=lambda x: x[1], reverse=True), resume_texts
+
+# def generate_screening_test(jd_text):
+#     prompt = f"""Generate 5 short screening questions for this job description:\n\n{jd_text}\n\nReturn only the questions."""
+#     try:
+#         res = client.chat.completions.create(
+#             model="gpt-4",
+#             messages=[{"role": "user", "content": prompt}],
+#             temperature=0.7
+#         )
+#         return res.choices[0].message.content.strip()
+#     except:
+#         return ""
+
+# def send_email(to_email, subject, body):
+#     try:
+#         msg = EmailMessage()
+#         msg.set_content(body)
+#         msg["Subject"] = subject
+#         msg["From"] = EMAIL_SENDER
+#         msg["To"] = to_email
+#         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
+#             smtp.login(EMAIL_SENDER, EMAIL_PASSWORD)
+#             smtp.send_message(msg)
+#         return True
+#     except Exception as e:
+#         st.error(f"Email failed: {e}")
+#         return False
+
+# ---------- User Interface ----------
+
+# JD Input
+jd_input_method = st.radio("📌 Job Description Input Method", ["Paste Text", "Upload File (PDF/DOCX)"])
+jd_text = ""
 
 if jd_input_method == "Paste Text":
-    jd_text = st.text_area("📄 Paste the Job Description here:", height=200, key="jd_text_input")
+    jd_text = st.text_area("Paste JD here", height=200)
 else:
-    jd_file = st.file_uploader("📁 Upload JD File", type=["pdf", "docx"])
-    jd_text = ""
+    jd_file = st.file_uploader("Upload JD File", type=["pdf", "docx"])
     if jd_file:
         ext = jd_file.name.lower().split('.')[-1]
-        if ext == "pdf":
-            jd_text = extract_text_from_pdf(jd_file)
-        elif ext == "docx":
-            jd_text = extract_text_from_docx(jd_file)
-        else:
-            st.warning("⚠️ Only PDF and DOCX supported for JD upload.")
+        jd_text = extract_text_from_pdf(jd_file) if ext == "pdf" else extract_text_from_docx(jd_file)
 
-# 📁 Resume Upload
-resume_files = st.file_uploader("📁 Upload Resumes (PDF or DOCX)", type=["pdf", "docx"], accept_multiple_files=True)
+# Custom Emphasis
+st.markdown("#### 🌟 Custom Emphasis (Optional)")
+custom_input_text = st.text_area("Enter any custom preferences (skills, experience, tools, etc.):", height=120)
 
-# 🚀 Trigger Ranking
+# Upload Resumes
+resume_files = st.file_uploader("Upload Resumes (PDF/DOCX)", type=["pdf", "docx"], accept_multiple_files=True)
+
+# Trigger Resume Ranking
 if st.button("🚀 Rank Resumes"):
     if not jd_text.strip() or not resume_files:
-        st.warning("⚠️ Provide both Job Description and at least one Resume.")
+        st.warning("Please provide both JD and resumes.")
     else:
-        with st.spinner("🔍 Analyzing resumes using embeddings..."):
-            ranked_resumes, resume_text_cache = rank_by_embedding(jd_text, resume_files)
+        with st.spinner("Ranking resumes..."):
+            ranked, text_map = rank_by_embedding(jd_text, resume_files, custom_input_text)
+            st.session_state.ranked_resumes = ranked
+            st.session_state.resume_texts = text_map
+            st.session_state.rank_triggered = True
+            st.session_state.selected_candidates = []
 
-        st.success("✅ Ranking complete!")
-        st.subheader("🏆 Ranked Resumes")
+# Display Ranked Resumes
+if st.session_state.rank_triggered and st.session_state.ranked_resumes:
+    st.subheader("🏆 Ranked Resumes")
+    for i, (name, score) in enumerate(st.session_state.ranked_resumes, start=1):
+        col1, col2 = st.columns([5, 1])
+        with col1:
+            st.markdown(f"**{i}. {name}** — Score: `{score:.4f}`")
+        with col2:
+            checkbox_key = f"check_{name}"
+            if st.checkbox("Select", key=checkbox_key):
+                if name not in st.session_state.selected_candidates:
+                    st.session_state.selected_candidates.append(name)
+            elif name in st.session_state.selected_candidates:
+                st.session_state.selected_candidates.remove(name)
+        with st.expander(f"📄 Preview Resume: {name}"):
+            st.text_area("Text Content", st.session_state.resume_texts[name], height=200, key=f"text_{name}")
 
-        for i, (name, score) in enumerate(ranked_resumes, start=1):
-            st.markdown(f"**{i}. {name}** — Similarity Score: `{score:.4f}`")
-            text = resume_text_cache.get(name)
-            if text:
-                with st.expander(f"📄 Preview Resume: {name}"):
-                    st.text_area("📄 Resume Preview", text, height=300, key=f"resume_preview_{i}_{name}")
+# Screening Test (Disabled)
+# if st.session_state.selected_candidates:
+#     st.subheader("🧠 Generate & Send Screening Test")
 
+#     if st.button("🧪 Generate Test"):
+#         st.session_state.screening_test = generate_screening_test(jd_text)
+
+#     if st.session_state.screening_test:
+#         st.text_area("📝 Screening Test", st.session_state.screening_test, height=250)
+
+#         for name in st.session_state.selected_candidates:
+#             extracted_text = st.session_state.resume_texts.get(name, "")
+#             auto_email = extract_email(extracted_text)
+#             default_email = st.session_state.emails.get(name, auto_email)
+
+#             email = st.text_input(f"📧 Email for {name}", value=default_email, key=f"email_{name}")
+#             st.session_state.emails[name] = email
+
+#             if st.button(f"📨 Send to {name}", key=f"send_{name}"):
+#                 if email and st.session_state.screening_test:
+#                     sent = send_email(email, "Your Screening Test", st.session_state.screening_test)
+#                     if sent:
+#                         st.success(f"✅ Sent to {email}")
+#                 else:
+#                     st.warning("Missing email or test.")
+
+#         if st.button("📤 Send to All Selected"):
+#             if st.session_state.screening_test:
+#                 for name, email in st.session_state.emails.items():
+#                     if email:
+#                         send_email(email, "Your Screening Test", st.session_state.screening_test)
+#                 st.success("✅ Screening test sent to all selected candidates.")
+#             else:
+#                 st.warning("No screening test generated.")
+
+# Hide Streamlit footer
+st.markdown("""
+    <style>
+        footer {visibility: hidden;}
+        .stApp {bottom: 0;}
+    </style>
+""", unsafe_allow_html=True)
